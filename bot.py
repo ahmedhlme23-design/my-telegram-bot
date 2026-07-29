@@ -16,7 +16,7 @@ from telegram.ext import (
     filters,
 )
 
-# --- 1. سيرفر وهمي للاستضافة 24/7 ---
+# --- 1. سيرفر وهمي للاستضافة ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -43,36 +43,41 @@ YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UCL1nCgb41VNqe32kY0tCZ1w/
 
 REG_NAME, REG_PHONE, SUPPORT_MSG = range(3)
 
-# --- دالة تسجيل حساب تلقائي وحفظ الرسائل لحظياً ---
-async def auto_register_and_log(user, message_text: str, sender: str = "user"):
+# قائمة أسماء الأزرار الرسمية لمنع حفظها نصوص شات أو دعم
+SYSTEM_BUTTONS = ["📝 تسجيل", "📂 الأرشيف", "🎬 الفيديوهات الجديدة", "📺 قناة اليوتيوب", "💬 الدعم"]
+
+# --- دالة تسجيل اليوزر الآلي ---
+async def ensure_user_registered(user):
     if not user:
         return
     try:
-        # 1. حفظ أو تحديث بيانت المستخدم تلقائياً
         user_data = {
             "telegram_id": user.id,
             "full_name": user.first_name or "مستخدم",
             "username": user.username or ""
         }
         supabase.table("users").upsert(user_data, on_conflict="telegram_id").execute()
-
-        # 2. تسجيل نص الرسالة في قاعدة البيانات
-        if message_text:
-            msg_data = {
-                "telegram_id": user.id,
-                "sender": sender,
-                "message_text": message_text
-            }
-            supabase.table("chat_messages").insert(msg_data).execute()
     except Exception as e:
-        print(f"Error in auto_register_and_log: {e}")
+        print(f"Error registering user: {e}")
+
+# --- دالة حفظ رسالة الشات المباشر ---
+async def log_chat_message(user_id: int, text: str, sender: str = "user"):
+    try:
+        if text and text not in SYSTEM_BUTTONS:
+            supabase.table("chat_messages").insert({
+                "telegram_id": user_id,
+                "sender": sender,
+                "message_text": text
+            }).execute()
+    except Exception as e:
+        print(f"Error logging chat message: {e}")
 
 # --- دوال التحقق من الحظر والـ Mute ---
 async def check_user_access(user_id: int):
     try:
         global_res = supabase.table("bot_settings").select("value").eq("key", "global_mute").execute()
         if global_res.data and global_res.data[0].get("value") == True:
-            return False, "🔒 استقبال الرسائل مغلق حالياً من قبل الإدارة لجميع المستخدمين. يرجى المحاولة لاحقاً."
+            return False, "🔒 استقبال الرسائل مغلق حالياً من قبل الإدارة لجميع المستخدمين."
     except Exception as e:
         print(f"Error checking global mute: {e}")
 
@@ -98,7 +103,6 @@ async def check_user_access(user_id: int):
 
     return True, ""
 
-# قائمة الأزرار الرئيسية
 def get_main_keyboard():
     keyboard = [
         [KeyboardButton("📝 تسجيل"), KeyboardButton("📂 الأرشيف")],
@@ -110,7 +114,7 @@ def get_main_keyboard():
 # أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    await auto_register_and_log(user, "/start", "user")
+    await ensure_user_registered(user)
 
     can_access, reason = await check_user_access(user.id)
     if not can_access:
@@ -122,7 +126,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- قسم الفيديوهات الجديدة ---
 async def open_new_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    await auto_register_and_log(user, "🎬 الفيديوهات الجديدة", "user")
+    await ensure_user_registered(user)
 
     can_access, reason = await check_user_access(user.id)
     if not can_access:
@@ -160,10 +164,45 @@ async def open_new_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error fetching videos: {e}")
         await update.message.reply_text("حدث خطأ أثناء جلب الفيديوهات.")
 
+# --- قسم الأرشيف ---
+async def open_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    await ensure_user_registered(user)
+
+    can_access, reason = await check_user_access(user.id)
+    if not can_access:
+        await update.message.reply_text(reason, reply_markup=get_main_keyboard())
+        return
+
+    try:
+        res = supabase.table("archive_files").select("*").order("id", desc=True).execute()
+        files = res.data
+        if not files:
+            await update.message.reply_text("لا توجد ملفات في الأرشيف حالياً.")
+            return
+
+        keyboard = [[InlineKeyboardButton(f"📄 {f['title']}", url=f['file_url'])] for f in files]
+        await update.message.reply_text("اختر الملف الذي تريد تحميله من الأرشيف:", reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception as e:
+        await update.message.reply_text("حدث خطأ أثناء جلب الملفات.")
+
+# --- قسم قناة اليوتيوب ---
+async def open_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    await ensure_user_registered(user)
+
+    can_access, reason = await check_user_access(user.id)
+    if not can_access:
+        await update.message.reply_text(reason, reply_markup=get_main_keyboard())
+        return
+
+    keyboard = [[InlineKeyboardButton("🔗 زيارة قناة اليوتيوب", url=YOUTUBE_CHANNEL_URL)]]
+    await update.message.reply_text("اضغط على الزر أدناه للانتقال للقناة:", reply_markup=InlineKeyboardMarkup(keyboard))
+
 # --- قسم التسجيل ---
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    await auto_register_and_log(user, "📝 تسجيل", "user")
+    await ensure_user_registered(user)
 
     can_access, reason = await check_user_access(user.id)
     if not can_access:
@@ -176,7 +215,10 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     name_input = update.message.text.strip()
-    await auto_register_and_log(user, name_input, "user")
+
+    if name_input in SYSTEM_BUTTONS:
+        await update.message.reply_text("تم إلغاء عملية التسجيل.", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
 
     can_access, reason = await check_user_access(user.id)
     if not can_access:
@@ -204,13 +246,15 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone = update.message.contact.phone_number
     else:
         raw_phone = update.message.text.strip()
+        if raw_phone in SYSTEM_BUTTONS:
+            await update.message.reply_text("تم إلغاء التسجيل.", reply_markup=get_main_keyboard())
+            return ConversationHandler.END
+
         cleaned_phone = raw_phone.replace("+", "").replace(" ", "").replace("-", "")
         if not cleaned_phone.isdigit():
             await update.message.reply_text("❌ يجب أن يحتوي رقم الهاتف على أرقام فقط! أعد الإدخال:")
             return REG_PHONE
         phone = raw_phone
-
-    await auto_register_and_log(user, f"رقم الهاتف: {phone}", "user")
 
     try:
         data = {"telegram_id": user.id, "full_name": name, "phone_number": phone}
@@ -221,45 +265,10 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     return ConversationHandler.END
 
-# --- قسم الأرشيف ---
-async def open_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    await auto_register_and_log(user, "📂 الأرشيف", "user")
-
-    can_access, reason = await check_user_access(user.id)
-    if not can_access:
-        await update.message.reply_text(reason, reply_markup=get_main_keyboard())
-        return
-
-    try:
-        res = supabase.table("archive_files").select("*").order("id", desc=True).execute()
-        files = res.data
-        if not files:
-            await update.message.reply_text("لا توجد ملفات في الأرشيف حالياً.")
-            return
-
-        keyboard = [[InlineKeyboardButton(f"📄 {f['title']}", url=f['file_url'])] for f in files]
-        await update.message.reply_text("اختر الملف الذي تريد تحميله من الأرشيف:", reply_markup=InlineKeyboardMarkup(keyboard))
-    except Exception as e:
-        await update.message.reply_text("حدث خطأ أثناء جلب الملفات.")
-
-# --- قسم قناة اليوتيوب ---
-async def open_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    await auto_register_and_log(user, "📺 قناة اليوتيوب", "user")
-
-    can_access, reason = await check_user_access(user.id)
-    if not can_access:
-        await update.message.reply_text(reason, reply_markup=get_main_keyboard())
-        return
-
-    keyboard = [[InlineKeyboardButton("🔗 زيارة قناة اليوتيوب", url=YOUTUBE_CHANNEL_URL)]]
-    await update.message.reply_text("اضغط على الزر أدناه للانتقال للقناة:", reply_markup=InlineKeyboardMarkup(keyboard))
-
 # --- قسم الدعم ---
 async def start_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    await auto_register_and_log(user, "💬 الدعم", "user")
+    await ensure_user_registered(user)
 
     can_access, reason = await check_user_access(user.id)
     if not can_access:
@@ -271,22 +280,30 @@ async def start_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    user_msg = update.message.text
-    await auto_register_and_log(user, user_msg, "user")
+    user_msg = update.message.text.strip()
+
+    # إذا ضغط على زر من الأزرار الأساسية وهو في نمط الدعم، يتم إلغاء طلب الدعم وتمرير الأمر للزر
+    if user_msg in SYSTEM_BUTTONS:
+        await update.message.reply_text("تم إلغاء إرسال رسالة الدعم.", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
 
     can_access, reason = await check_user_access(user.id)
     if not can_access:
         await update.message.reply_text(reason, reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
+    # 1. حفظ الرسالة في جدول الدعم
     try:
         support_data = {"telegram_id": user.id, "full_name": user.first_name, "username": user.username, "message": user_msg}
         supabase.table("support_messages").insert(support_data).execute()
     except Exception as e:
         print(f"Error saving support: {e}")
 
+    # 2. حفظ الرسالة أيضاً في سجل المحادثة المباشرة للشات اللحظي
+    await log_chat_message(user.id, user_msg, "user")
+
+    # 3. إشعار الأدمن
     admin_notification = f"📩 **رسالة دعم جديدة**\n\n👤 **المستخدِم:** {user.first_name} (@{user.username})\n🆔 **ID:** `{user.id}`\n\n💬 **الرسالة:**\n{user_msg}"
-    
     try:
         await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_notification, parse_mode="Markdown")
         await update.message.reply_text("تم إرسال رسالتك إلى الدعم بنجاح!", reply_markup=get_main_keyboard())
@@ -295,22 +312,26 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
 
     return ConversationHandler.END
 
-# 🔴 معالج لالتقاط أية رسالة عادية خارج الأوامر والأزرار
-async def handle_general_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# 🔴 التقاط أية رسالة نصية عادية من المستخدم خارج الأزرار وتسجيلها فوراً في الشات المباشر
+async def handle_direct_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.text:
         user = update.message.from_user
-        text = update.message.text
-        
-        # تسجيل المستخدم المباشر ونص الرسالة فوراً
-        await auto_register_and_log(user, text, "user")
+        text = update.message.text.strip()
+
+        if text in SYSTEM_BUTTONS:
+            return
+
+        await ensure_user_registered(user)
 
         can_access, reason = await check_user_access(user.id)
         if not can_access:
             await update.message.reply_text(reason, reply_markup=get_main_keyboard())
             return
 
-        # رد تلقائي إذا كانت كلمة عادية غير معروفة
-        await update.message.reply_text("وصلت رسالتك! يرجى إرسال الرسالة من خلال قسم 💬 الدعم ليتم إرسالها للإدارة مباشرة، أو اختر خياراً من القائمة:", reply_markup=get_main_keyboard())
+        # تسجليها فوراً في الشات المباشر
+        await log_chat_message(user.id, text, "user")
+        
+        await update.message.reply_text("تم استلام رسالتك وتوصيلها للإدارة! 📩", reply_markup=get_main_keyboard())
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("تم إلغاء العملية.", reply_markup=get_main_keyboard())
@@ -341,10 +362,10 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^📺 قناة اليوتيوب$"), open_youtube))
     app.add_handler(MessageHandler(filters.Regex("^🎬 الفيديوهات الجديدة$"), open_new_videos))
 
-    # التقاط أي نص عام آخر من أي يوزر وتسجيله
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_general_message))
+    # التقاط أي نص عادي آخر من اليوزر وتسجيله في الشات المباشر فوراً
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_direct_chat_message))
 
-    print("البوت يعمل مع التعديل النهائي لاستقبال وتسجيل بيانات كافة المستخدمين...")
+    print("البوت يعمل بحل التعارض والمزامنة اللحظية الشاملة...")
     app.run_polling()
 
 if __name__ == "__main__":
