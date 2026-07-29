@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import threading
+import asyncio
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from supabase import create_client, Client
@@ -45,6 +46,7 @@ YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UCL1nCgb41VNqe32kY0tCZ1w/
 REG_NAME, REG_PHONE, SUPPORT_MSG = range(3)
 SYSTEM_BUTTONS = ["📝 تسجيل", "📂 الأرشيف", "🎬 الفيديوهات الجديدة", "📺 قناة اليوتيوب", "💬 الدعم"]
 
+# --- دوال الاستعلام اللاتزامنية غير المعطلة (Async Supabase Calls) ---
 async def ensure_user_registered(user):
     if not user:
         return
@@ -54,31 +56,31 @@ async def ensure_user_registered(user):
             "full_name": user.first_name or "مستخدم",
             "username": user.username or ""
         }
-        supabase.table("users").upsert(user_data, on_conflict="telegram_id").execute()
+        await asyncio.to_thread(lambda: supabase.table("users").upsert(user_data, on_conflict="telegram_id").execute())
     except Exception as e:
         print(f"Error registering user: {e}")
 
 async def log_chat_message(user_id: int, text: str, sender: str = "user"):
     try:
         if text and text not in SYSTEM_BUTTONS:
-            supabase.table("chat_messages").insert({
+            await asyncio.to_thread(lambda: supabase.table("chat_messages").insert({
                 "telegram_id": user_id,
                 "sender": sender,
                 "message_text": text
-            }).execute()
+            }).execute())
     except Exception as e:
         print(f"Error logging chat message: {e}")
 
 async def check_user_access(user_id: int):
     try:
-        global_res = supabase.table("bot_settings").select("value").eq("key", "global_mute").execute()
+        global_res = await asyncio.to_thread(lambda: supabase.table("bot_settings").select("value").eq("key", "global_mute").execute())
         if global_res.data and global_res.data[0].get("value") == True:
             return False, "🔒 استقبال الرسائل مغلق حالياً من قبل الإدارة لجميع المستخدمين."
     except Exception as e:
         print(f"Error checking global mute: {e}")
 
     try:
-        user_res = supabase.table("users").select("is_blocked, muted_until").eq("telegram_id", user_id).execute()
+        user_res = await asyncio.to_thread(lambda: supabase.table("users").select("is_blocked, muted_until").eq("telegram_id", user_id).execute())
         if user_res.data:
             user_data = user_res.data[0]
             if user_data.get("is_blocked"):
@@ -107,9 +109,10 @@ def get_main_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+# أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    await ensure_user_registered(user)
+    asyncio.create_task(ensure_user_registered(user))
 
     can_access, reason = await check_user_access(user.id)
     if not can_access:
@@ -118,9 +121,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("أهلاً بك! اختر من القائمة أدناه:", reply_markup=get_main_keyboard())
 
+# --- قسم الفيديوهات الجديدة ---
 async def open_new_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    await ensure_user_registered(user)
+    asyncio.create_task(ensure_user_registered(user))
 
     can_access, reason = await check_user_access(user.id)
     if not can_access:
@@ -128,7 +132,7 @@ async def open_new_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        res = supabase.table("new_videos").select("*").order("id", desc=True).limit(5).execute()
+        res = await asyncio.to_thread(lambda: supabase.table("new_videos").select("*").order("id", desc=True).limit(5).execute())
         videos = res.data
 
         if not videos:
@@ -161,9 +165,10 @@ async def open_new_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error fetching videos: {e}")
         await update.message.reply_text("حدث خطأ أثناء جلب الفيديوهات.", reply_markup=get_main_keyboard())
 
+# --- قسم الأرشيف ---
 async def open_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    await ensure_user_registered(user)
+    asyncio.create_task(ensure_user_registered(user))
 
     can_access, reason = await check_user_access(user.id)
     if not can_access:
@@ -171,7 +176,7 @@ async def open_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        res = supabase.table("archive_files").select("*").order("id", desc=True).execute()
+        res = await asyncio.to_thread(lambda: supabase.table("archive_files").select("*").order("id", desc=True).execute())
         files = res.data
         if not files:
             await update.message.reply_text("لا توجد ملفات في الأرشيف حالياً.", reply_markup=get_main_keyboard())
@@ -182,9 +187,10 @@ async def open_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text("حدث خطأ أثناء جلب الملفات.", reply_markup=get_main_keyboard())
 
+# --- قسم قناة اليوتيوب (استجابة فورية بدون أي تأخير) ---
 async def open_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    await ensure_user_registered(user)
+    asyncio.create_task(ensure_user_registered(user))
 
     can_access, reason = await check_user_access(user.id)
     if not can_access:
@@ -194,9 +200,10 @@ async def open_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("🔗 زيارة قناة اليوتيوب", url=YOUTUBE_CHANNEL_URL)]]
     await update.message.reply_text("اضغط على الزر أدناه للانتقال للقناة:", reply_markup=InlineKeyboardMarkup(keyboard))
 
+# --- قسم التسجيل ---
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    await ensure_user_registered(user)
+    asyncio.create_task(ensure_user_registered(user))
 
     can_access, reason = await check_user_access(user.id)
     if not can_access:
@@ -252,16 +259,17 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         data = {"telegram_id": user.id, "full_name": name, "phone_number": phone}
-        supabase.table("users").upsert(data, on_conflict="telegram_id").execute()
+        await asyncio.to_thread(lambda: supabase.table("users").upsert(data, on_conflict="telegram_id").execute())
         await update.message.reply_text(f"تم حفظ بياناتك بنجاح! 🎉\n\nالاسم: {name}\nالرقم: {phone}", reply_markup=get_main_keyboard())
     except Exception as e:
         await update.message.reply_text("حدث خطأ أثناء حفظ البيانات، يرجى المحاولة لاحقاً.", reply_markup=get_main_keyboard())
         
     return ConversationHandler.END
 
+# --- قسم الدعم ---
 async def start_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    await ensure_user_registered(user)
+    asyncio.create_task(ensure_user_registered(user))
 
     can_access, reason = await check_user_access(user.id)
     if not can_access:
@@ -286,11 +294,11 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         support_data = {"telegram_id": user.id, "full_name": user.first_name, "username": user.username, "message": user_msg}
-        supabase.table("support_messages").insert(support_data).execute()
+        await asyncio.to_thread(lambda: supabase.table("support_messages").insert(support_data).execute())
     except Exception as e:
         print(f"Error saving support: {e}")
 
-    await log_chat_message(user.id, user_msg, "user")
+    asyncio.create_task(log_chat_message(user.id, user_msg, "user"))
 
     admin_notification = f"📩 **رسالة دعم جديدة**\n\n👤 **المستخدِم:** {user.first_name} (@{user.username})\n🆔 **ID:** `{user.id}`\n\n💬 **الرسالة:**\n{user_msg}"
     try:
@@ -309,21 +317,22 @@ async def handle_direct_chat_message(update: Update, context: ContextTypes.DEFAU
         if text in SYSTEM_BUTTONS:
             return
 
-        await ensure_user_registered(user)
+        asyncio.create_task(ensure_user_registered(user))
 
         can_access, reason = await check_user_access(user.id)
         if not can_access:
             await update.message.reply_text(reason, reply_markup=get_main_keyboard())
             return
 
-        await log_chat_message(user.id, text, "user")
+        asyncio.create_task(log_chat_message(user.id, text, "user"))
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("تم إلغاء العملية.", reply_markup=get_main_keyboard())
     return ConversationHandler.END
 
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # تفعيل المعالجة المتوازية للتحديثات لمنع التأخير والطوابير
+    app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
 
     reg_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^📝 تسجيل$"), start_registration)],
@@ -349,7 +358,7 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_direct_chat_message))
 
-    print("البوت يعمل واستجابة الأزرار فورية دون حاجة للتحديث...")
+    print("البوت يعمل بالسرعة الفائقة والمعالجة اللحظية بدون تأخير الخطوة الواحدة...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
