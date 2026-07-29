@@ -110,6 +110,12 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return REG_NAME
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    can_access, reason = await check_user_access(user_id)
+    if not can_access:
+        await update.message.reply_text(reason, reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
     name_input = update.message.text.strip()
     if name_input.isdigit() or not re.search(r'[\w\u0600-\u06FF]', name_input):
         await update.message.reply_text("❌ يجب أن يتكون الاسم من أحرف وليس أرقام فقط. أعد إدخال اسمك:")
@@ -122,8 +128,12 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
+    can_access, reason = await check_user_access(user_id)
+    if not can_access:
+        await update.message.reply_text(reason, reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
     name = context.user_data.get('name')
-    
     if update.message.contact:
         phone = update.message.contact.phone_number
     else:
@@ -187,6 +197,13 @@ async def start_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
+    
+    # 🔴 فحص الكتم والحظر فور استلام نص الرسالة قبل حفظها أو إرسالها للأدمن
+    can_access, reason = await check_user_access(user.id)
+    if not can_access:
+        await update.message.reply_text(reason, reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
     user_msg = update.message.text
 
     try:
@@ -233,7 +250,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^📂 الأرشيف$"), open_archive))
     app.add_handler(MessageHandler(filters.Regex("^📺 قناة اليوتيوب$"), open_youtube))
 
-    print("البوت يعمل مع ميزة الكتم والإغلاق العام...")
+    print("البوت يعمل مع التعديل الدقيق لفحص الكتم...")
     app.run_polling()
 
 if __name__ == "__main__":
