@@ -1,4 +1,7 @@
 import logging
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from supabase import create_client, Client
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
@@ -11,13 +14,29 @@ from telegram.ext import (
     filters,
 )
 
-# --- إعدادات Supabase ---
+# --- 1. سيرفر وهمي لإبقاء الخطة المجانية على Render شغالة ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive and running!")
+
+def run_dummy_server():
+    # Render يمرر المنفذ عبر متغير البيئة PORT تلقائياً
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+# تشغيل السيرفر الوهمي في ثريد (Thread) منفصل في الخلفية
+threading.Thread(target=run_dummy_server, daemon=True).start()
+
+# --- 2. إعدادات Supabase ---
 SUPABASE_URL = "https://besvojmipioaeavdwcvj.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJlc3Zvam1pcGlvYWVhdmR3Y3ZqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUzMzc4NzgsImV4cCI6MjEwMDkxMzg3OH0.yE4u8bCY8vMWPSLeZHKVbQEoC0VUqb41pEHHDBfqX1Q"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- إعدادات البوت ---
+# --- 3. إعدادات البوت ---
 BOT_TOKEN = "8943376248:AAHAdToTCLQAc-3uj9MQ7oAbhTwO5q-rHjs"  # ضع توكن البوت الخاص بك من BotFather
 ADMIN_CHAT_ID = 1359132699          # ضع الـ ID الخاص بك هنا لرسائل الدعم
 
@@ -71,7 +90,6 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "full_name": name,
             "phone_number": phone
         }
-        # إجراء عملية الحفظ أو التحديث إذا كان المستخدم مسجلاً من قبل (Upsert)
         supabase.table("users").upsert(data, on_conflict="telegram_id").execute()
         
         await update.message.reply_text(
@@ -133,6 +151,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("تم إلغاء العملية.", reply_markup=get_main_keyboard())
     return ConversationHandler.END
 
+# --- التشغيل الرئيسي ---
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -159,7 +178,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^📂 الأرشيف$"), open_archive))
     app.add_handler(CallbackQueryHandler(handle_archive_download))
 
-    print("البوت يعمل الآن ومربوط بـ Supabase...")
+    print("البوت يعمل الآن ومستعد للاستضافة على Render...")
     app.run_polling()
 
 if __name__ == "__main__":
