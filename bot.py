@@ -43,7 +43,7 @@ YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UCL1nCgb41VNqe32kY0tCZ1w/
 
 REG_NAME, REG_PHONE, SUPPORT_MSG = range(3)
 
-# قائمة أسماء الأزرار الرسمية لمنع حفظها نصوص شات أو دعم
+# قائمة أسماء الأزرار الرسمية لمنع حفظها كنصوص شات
 SYSTEM_BUTTONS = ["📝 تسجيل", "📂 الأرشيف", "🎬 الفيديوهات الجديدة", "📺 قناة اليوتيوب", "💬 الدعم"]
 
 # --- دالة تسجيل اليوزر الآلي ---
@@ -282,7 +282,6 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
     user = update.message.from_user
     user_msg = update.message.text.strip()
 
-    # إذا ضغط على زر من الأزرار الأساسية وهو في نمط الدعم، يتم إلغاء طلب الدعم وتمرير الأمر للزر
     if user_msg in SYSTEM_BUTTONS:
         await update.message.reply_text("تم إلغاء إرسال رسالة الدعم.", reply_markup=get_main_keyboard())
         return ConversationHandler.END
@@ -292,17 +291,14 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(reason, reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
-    # 1. حفظ الرسالة في جدول الدعم
     try:
         support_data = {"telegram_id": user.id, "full_name": user.first_name, "username": user.username, "message": user_msg}
         supabase.table("support_messages").insert(support_data).execute()
     except Exception as e:
         print(f"Error saving support: {e}")
 
-    # 2. حفظ الرسالة أيضاً في سجل المحادثة المباشرة للشات اللحظي
     await log_chat_message(user.id, user_msg, "user")
 
-    # 3. إشعار الأدمن
     admin_notification = f"📩 **رسالة دعم جديدة**\n\n👤 **المستخدِم:** {user.first_name} (@{user.username})\n🆔 **ID:** `{user.id}`\n\n💬 **الرسالة:**\n{user_msg}"
     try:
         await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_notification, parse_mode="Markdown")
@@ -312,7 +308,7 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
 
     return ConversationHandler.END
 
-# 🔴 التقاط أية رسالة نصية عادية من المستخدم خارج الأزرار وتسجيلها فوراً في الشات المباشر
+# 🔴 استقبال أية رسالة نصية عادية وتسجيلها للشات المباشر دون إرسال "تم استلام رسالتك"
 async def handle_direct_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.text:
         user = update.message.from_user
@@ -328,10 +324,8 @@ async def handle_direct_chat_message(update: Update, context: ContextTypes.DEFAU
             await update.message.reply_text(reason, reply_markup=get_main_keyboard())
             return
 
-        # تسجليها فوراً في الشات المباشر
+        # تسجيل النص مباشرة للوحة التحكم بدون الرد برسالة آليّة
         await log_chat_message(user.id, text, "user")
-        
-        await update.message.reply_text("تم استلام رسالتك وتوصيلها للإدارة! 📩", reply_markup=get_main_keyboard())
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("تم إلغاء العملية.", reply_markup=get_main_keyboard())
@@ -362,10 +356,9 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^📺 قناة اليوتيوب$"), open_youtube))
     app.add_handler(MessageHandler(filters.Regex("^🎬 الفيديوهات الجديدة$"), open_new_videos))
 
-    # التقاط أي نص عادي آخر من اليوزر وتسجيله في الشات المباشر فوراً
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_direct_chat_message))
 
-    print("البوت يعمل بحل التعارض والمزامنة اللحظية الشاملة...")
+    print("البوت يعمل بوضع الشات المباشر الصامت الصادر والوارد...")
     app.run_polling()
 
 if __name__ == "__main__":
