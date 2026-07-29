@@ -33,21 +33,25 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-# --- 2. إعدادات Supabase ---
+# --- 2. إعدادات قاعدة البيانات الأساسية للمشروع ---
 SUPABASE_URL = "https://besvojmipioaeavdwcvj.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJlc3Zvam1pcGlvYWVhdmR3Y3ZqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUzMzc4NzgsImV4cCI6MjEwMDkxMzg3OH0.yE4u8bCY8vMWPSLeZHKVbQEoC0VUqb41pEHHDBfqX1Q"
-
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- 3. إعدادات البوت والـ ID ---
+# --- 3. إعدادات قاعدة بيانات نتائج الثانوية العامة (المشروع الثاني) ---
+RESULTS_SUPABASE_URL = "https://zaycmrniwffsakzbvesb.supabase.co"
+RESULTS_SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpheWNtcm5pd2Zmc2FremJ2ZXNiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUyNjk0NTgsImV4cCI6MjEwMDg0NTQ1OH0.jW37BJ9cRZWk3OSo27GpFco-4urM0gY8t-azJ5uRzDs"
+results_supabase: Client = create_client(RESULTS_SUPABASE_URL, RESULTS_SUPABASE_KEY)
+
+# --- 4. إعدادات البوت والـ ID ---
 BOT_TOKEN = "8943376248:AAHAdToTCLQAc-3uj9MQ7oAbhTwO5q-rHjs"
 ADMIN_CHAT_ID = 1359132699
 YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UCL1nCgb41VNqe32kY0tCZ1w/"
 
-REG_NAME, REG_PHONE, SUPPORT_MSG, SUPPORT_REPLY_MSG = range(4)
-SYSTEM_BUTTONS = ["📝 تسجيل", "📂 الأرشيف", "🎬 الفيديوهات الجديدة", "📺 قناة اليوتيوب", "💬 الدعم"]
+REG_NAME, REG_PHONE, SUPPORT_MSG, SUPPORT_REPLY_MSG, RESULT_SEARCH = range(5)
+SYSTEM_BUTTONS = ["📝 تسجيل", "📂 الأرشيف", "🎬 الفيديوهات الجديدة", "📺 قناة اليوتيوب", "💬 الدعم", "🎓 نتيجة الثانوية العامة 2026"]
 
-# --- دوال Supabase اللاتزامنية السريعة ---
+# --- دوال Supabase اللاتزامنية ---
 async def ensure_user_registered(user):
     if not user:
         return
@@ -102,8 +106,10 @@ async def check_user_access(user_id: int):
 
     return True, ""
 
+# قائمة الأزرار الرئيسية متضمنة الزر الجديد
 def get_main_keyboard():
     keyboard = [
+        [KeyboardButton("🎓 نتيجة الثانوية العامة 2026")],
         [KeyboardButton("📝 تسجيل"), KeyboardButton("📂 الأرشيف")],
         [KeyboardButton("🎬 الفيديوهات الجديدة"), KeyboardButton("📺 قناة اليوتيوب")],
         [KeyboardButton("💬 الدعم")]
@@ -121,6 +127,77 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text("أهلاً بك! اختر من القائمة أدناه:", reply_markup=get_main_keyboard())
+
+# --- قسم الاستعلام عن نتيجة الثانوية العامة 2026 ---
+async def start_result_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    asyncio.create_task(ensure_user_registered(user))
+
+    can_access, reason = await check_user_access(user.id)
+    if not can_access:
+        await update.message.reply_text(reason, reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
+    await update.message.reply_text("🔎 **من فضلك اكتب اسم الطالب أو رقم الجلوس للبحث عن النتيجة:**")
+    return RESULT_SEARCH
+
+async def process_result_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    query_text = update.message.text.strip()
+
+    if query_text in SYSTEM_BUTTONS:
+        await update.message.reply_text("تم إلغاء البحث عن النتيجة.", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
+    can_access, reason = await check_user_access(user.id)
+    if not can_access:
+        await update.message.reply_text(reason, reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
+    asyncio.create_task(log_chat_message(user.id, f"بحث نتيجة: {query_text}", "user"))
+
+    try:
+        # البحث في قاعدة بيانات النتيجة الثانية
+        if query_text.isdigit():
+            # البحث برقم الجلوس
+            seating_num = int(query_text)
+            res = await asyncio.to_thread(lambda: results_supabase.table("student_results").select("*").eq("seating_no", seating_num).limit(5).execute())
+        else:
+            # البحث بالاسم
+            res = await asyncio.to_thread(lambda: results_supabase.table("student_results").select("*").ilike("arabic_name", f"%{query_text}%").limit(5).execute())
+
+        students = res.data
+
+        if not students:
+            await update.message.reply_text("❌ لم يتم العثور على أي نتيجة تطابق إدخالك. يرجى التأكد من الاسم أو رقم الجلوس والمحاولة مرة أخرى.", reply_markup=get_main_keyboard())
+            return ConversationHandler.END
+
+        # عرض النتائج
+        for student in students:
+            name = student.get("arabic_name", "غير محدد")
+            seating = student.get("seating_no", "غير محدد")
+            degree = float(student.get("total_degree") or 0)
+            case_desc = student.get("student_case_desc", "غير محدد")
+
+            # حساب النسبة المئوية تلقائياً بناءً على مجموع 320
+            percentage = (degree / 320.0) * 100.0
+
+            result_msg = (
+                f"🎓 **نتيجة الطالب:**\n\n"
+                f"👤 **الاسم:** {name}\n"
+                f"🔢 **رقم الجلوس:** `{seating}`\n"
+                f"📊 **المجموع الكلي:** `{degree}` من 320\n"
+                f"📈 **النسبة المئوية:** `{percentage:.2f}%`\n"
+                f"📌 **الحالة:** {case_desc}"
+            )
+
+            await update.message.reply_text(result_msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+    except Exception as e:
+        print(f"Error searching results: {e}")
+        await update.message.reply_text("حدث خطأ أثناء جلب النتيجة، يرجى المحاولة لاحقاً.", reply_markup=get_main_keyboard())
+
+    return ConversationHandler.END
 
 # --- قسم الفيديوهات الجديدة ---
 async def open_new_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -295,7 +372,7 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         support_data = {"telegram_id": user.id, "full_name": user.first_name, "username": user.username, "message": user_msg}
-        res = await asyncio.to_thread(lambda: supabase.table("support_messages").insert(support_data).execute())
+        await asyncio.to_thread(lambda: supabase.table("support_messages").insert(support_data).execute())
     except Exception as e:
         print(f"Error saving support: {e}")
 
@@ -310,7 +387,6 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
 
     return ConversationHandler.END
 
-# --- الرد على تذكرة دعم محددة عند ضغط المستخدم زر الإجابة ---
 async def handle_reply_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -332,7 +408,6 @@ async def process_user_ticket_reply(update: Update, context: ContextTypes.DEFAUL
 
     if ticket_id:
         try:
-            # جلب التذكرة الحالية وتحديث الردود
             res = await asyncio.to_thread(lambda: supabase.table("support_messages").select("replies").eq("id", ticket_id).single().execute())
             existing_replies = res.data.get("replies") or []
             existing_replies.append({"sender": "user", "text": text, "time": datetime.now().strftime("%Y-%m-%d %H:%M")})
@@ -395,16 +470,25 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    result_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^🎓 نتيجة الثانوية العامة 2026$"), start_result_search)],
+        states={
+            RESULT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_result_search)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(reg_handler)
     app.add_handler(support_handler)
+    app.add_handler(result_handler)
     app.add_handler(MessageHandler(filters.Regex("^📂 الأرشيف$"), open_archive))
     app.add_handler(MessageHandler(filters.Regex("^📺 قناة اليوتيوب$"), open_youtube))
     app.add_handler(MessageHandler(filters.Regex("^🎬 الفيديوهات الجديدة$"), open_new_videos))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_direct_chat_message))
 
-    print("البوت يعمل بنظام التذاكر وسلسلة الردود المنسقة...")
+    print("البوت يعمل مع ميزة نتيجة الثانوية العامة 2026...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
