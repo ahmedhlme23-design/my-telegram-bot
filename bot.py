@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import threading
+from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from supabase import create_client, Client
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
@@ -15,7 +16,7 @@ from telegram.ext import (
     filters,
 )
 
-# --- 1. سيرفر وهمي لإبقاء خدمة الاستضافة السحابية متصلة 24/7 ---
+# --- 1. سيرفر وهمي للاستضافة ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -36,22 +37,48 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- 3. إعدادات البوت ---
-BOT_TOKEN = "8943376248:AAHAdToTCLQAc-3uj9MQ7oAbhTwO5q-rHjs"  # ضع توكن البوت الخاص بك من BotFather
-ADMIN_CHAT_ID = 1359132699          # ضع الـ ID الخاص بك هنا لرسائل الدعم
+BOT_TOKEN = "8943376248:AAHAdToTCLQAc-3uj9MQ7oAbhTwO5q-rHjs"  # ضع توكن البوت الخاص بك
+ADMIN_CHAT_ID = 1359132699          # ضع الـ ID الخاص بك
 YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UCL1nCgb41VNqe32kY0tCZ1w/"
 
-# مراحل الحوار
 REG_NAME, REG_PHONE, SUPPORT_MSG = range(3)
 
-# دالة التحقق من حظر المستخدم
-async def is_user_blocked(user_id: int) -> bool:
+# --- دوال التحقق من الحظر والـ Mute ---
+async def check_user_access(user_id: int):
+    """ترجع (يمكنه_الاستخدام, سبب_المنع)"""
+    # 1. فحص الإغلاق العام للجميع (Global Mute)
     try:
-        res = supabase.table("users").select("is_blocked").eq("telegram_id", user_id).execute()
-        if res.data and res.data[0].get("is_blocked"):
-            return True
+        global_res = supabase.table("bot_settings").select("value").eq("key", "global_mute").execute()
+        if global_res.data and global_res.data[0].get("value") == True:
+            return False, "🔒 استقبال الرسائل مغلق حالياً من قبل الإدارة لجميع المستخدمين. يرجى المحاولة لاحقاً."
     except Exception as e:
-        print(f"خطأ أثناء فحص حالة الحظر: {e}")
-    return False
+        print(f"Error checking global mute: {e}")
+
+    # 2. فحص الحظر والكتم للمستخدم
+    try:
+        user_res = supabase.table("users").select("is_blocked, muted_until").eq("telegram_id", user_id).execute()
+        if user_res.data:
+            user_data = user_res.data[0]
+            
+            # حظر نهائي
+            if user_data.get("is_blocked"):
+                return False, "❌ عذراً، تم حظرك من استخدام هذا البوت."
+
+            # كتم مؤقت
+            muted_until_str = user_data.get("muted_until")
+            if muted_until_str:
+                muted_until = datetime.fromisoformat(muted_until_str.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+                if now < muted_until:
+                    diff = muted_until - now
+                    hours, remainder = divmod(int(diff.total_seconds()), 3600)
+                    minutes, _ = divmod(remainder, 60)
+                    time_left = f"{hours} ساعة و {minutes} دقيقة" if hours > 0 else f"{minutes} دقيقة"
+                    return False, f"⏳ تم تقييد إرسال الرسائل لك مؤقتاً. يرجى الانتظار: {time_left}."
+    except Exception as e:
+        print(f"Error checking user access: {e}")
+
+    return True, ""
 
 # قائمة الأزرار الرئيسية
 def get_main_keyboard():
@@ -64,20 +91,19 @@ def get_main_keyboard():
 # أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    if await is_user_blocked(user_id):
-        await update.message.reply_text("❌ عذراً، تم حظرك من استخدام هذا البوت.")
+    can_access, reason = await check_user_access(user_id)
+    if not can_access:
+        await update.message.reply_text(reason)
         return
 
-    await update.message.reply_text(
-        "أهلاً بك! اختر من القائمة أدناه:",
-        reply_markup=get_main_keyboard()
-    )
+    await update.message.reply_text("أهلاً بك! اختر من القائمة أدناه:", reply_markup=get_main_keyboard())
 
 # --- قسم التسجيل ---
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    if await is_user_blocked(user_id):
-        await update.message.reply_text("❌ عذراً، تم حظرك من استخدام البوت.")
+    can_access, reason = await check_user_access(user_id)
+    if not can_access:
+        await update.message.reply_text(reason)
         return ConversationHandler.END
 
     await update.message.reply_text("من فضلك أدخل اسمك الكامل (أحرف فقط):")
@@ -85,18 +111,12 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name_input = update.message.text.strip()
-    
     if name_input.isdigit() or not re.search(r'[\w\u0600-\u06FF]', name_input):
-        await update.message.reply_text("❌ عذراً، يجب أن يتكون الاسم من أحرف وليس أرقام فقط. أعد إدخال اسمك الصحيح:")
+        await update.message.reply_text("❌ يجب أن يتكون الاسم من أحرف وليس أرقام فقط. أعد إدخال اسمك:")
         return REG_NAME
 
     context.user_data['name'] = name_input
-    
-    phone_button = ReplyKeyboardMarkup(
-        [[KeyboardButton("📱 إرسال رقم الهاتف", request_contact=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
+    phone_button = ReplyKeyboardMarkup([[KeyboardButton("📱 إرسال رقم الهاتف", request_contact=True)]], resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text("شكراً! الآن أرسل رقم هاتفك بالنقر على الزر أدناه أو اكتبه كأرقام فقط:", reply_markup=phone_button)
     return REG_PHONE
 
@@ -109,80 +129,57 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         raw_phone = update.message.text.strip()
         cleaned_phone = raw_phone.replace("+", "").replace(" ", "").replace("-", "")
-        
         if not cleaned_phone.isdigit():
-            await update.message.reply_text("❌ عذراً، يجب أن يحتوي رقم الهاتف على أرقام فقط! أعد إدخال رقم هاتفك:")
+            await update.message.reply_text("❌ يجب أن يحتوي رقم الهاتف على أرقام فقط! أعد الإدخال:")
             return REG_PHONE
-        
         phone = raw_phone
 
     try:
-        data = {
-            "telegram_id": user_id,
-            "full_name": name,
-            "phone_number": phone
-        }
+        data = {"telegram_id": user_id, "full_name": name, "phone_number": phone}
         supabase.table("users").upsert(data, on_conflict="telegram_id").execute()
-        
-        await update.message.reply_text(
-            f"تم حفظ بياناتك بنجاح في قاعدة البيانات! 🎉\n\nالاسم: {name}\nالرقم: {phone}",
-            reply_markup=get_main_keyboard()
-        )
+        await update.message.reply_text(f"تم حفظ بياناتك بنجاح! 🎉\n\nالاسم: {name}\nالرقم: {phone}", reply_markup=get_main_keyboard())
     except Exception as e:
-        print(f"خطأ أثناء الحفظ في Supabase: {e}")
-        await update.message.reply_text(
-            "حدث خطأ أثناء حفظ البيانات، يرجى المحاولة لاحقاً.",
-            reply_markup=get_main_keyboard()
-        )
+        await update.message.reply_text("حدث خطأ أثناء حفظ البيانات، يرجى المحاولة لاحقاً.", reply_markup=get_main_keyboard())
         
     return ConversationHandler.END
 
 # --- قسم الأرشيف ---
 async def open_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    if await is_user_blocked(user_id):
-        await update.message.reply_text("❌ عذراً، تم حظرك من استخدام البوت.")
+    can_access, reason = await check_user_access(user_id)
+    if not can_access:
+        await update.message.reply_text(reason)
         return
 
     try:
         res = supabase.table("archive_files").select("*").order("id", desc=True).execute()
         files = res.data
-
         if not files:
             await update.message.reply_text("لا توجد ملفات في الأرشيف حالياً.")
             return
 
-        keyboard = []
-        for f in files:
-            keyboard.append([InlineKeyboardButton(f"📄 {f['title']}", url=f['file_url'])])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("اختر الملف الذي تريد تحميله من الأرشيف:", reply_markup=reply_markup)
+        keyboard = [[InlineKeyboardButton(f"📄 {f['title']}", url=f['file_url'])] for f in files]
+        await update.message.reply_text("اختر الملف الذي تريد تحميله من الأرشيف:", reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
-        print(f"خطأ أثناء جلب الأرشيف: {e}")
-        await update.message.reply_text("حدث خطأ أثناء جلب الملفات من الأرشيف.")
+        await update.message.reply_text("حدث خطأ أثناء جلب الملفات.")
 
 # --- قسم قناة اليوتيوب ---
 async def open_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    if await is_user_blocked(user_id):
-        await update.message.reply_text("❌ عذراً، تم حظرك من استخدام البوت.")
+    can_access, reason = await check_user_access(user_id)
+    if not can_access:
+        await update.message.reply_text(reason)
         return
 
-    keyboard = [
-        [InlineKeyboardButton("🔗 زيارة قناة اليوتيوب", url=YOUTUBE_CHANNEL_URL)]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "اضغط على الزر أدناه للانتقال لمشاهدة القناة على يوتيوب:",
-        reply_markup=reply_markup
-    )
+    keyboard = [[InlineKeyboardButton("🔗 زيارة قناة اليوتيوب", url=YOUTUBE_CHANNEL_URL)]]
+    await update.message.reply_text("اضغط على الزر أدناه للانتقال للقناة:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # --- قسم الدعم ---
 async def start_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    if await is_user_blocked(user_id):
-        await update.message.reply_text("❌ عذراً، تم حظرك من استخدام البوت.")
+    can_access, reason = await check_user_access(user_id)
+    if not can_access:
+        await update.message.reply_text(reason)
         return ConversationHandler.END
 
     await update.message.reply_text("من فضلك اكتب رسالتك وسنقوم بتوصيلها للإدارة:")
@@ -193,28 +190,18 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
     user_msg = update.message.text
 
     try:
-        support_data = {
-            "telegram_id": user.id,
-            "full_name": user.first_name,
-            "username": user.username,
-            "message": user_msg
-        }
+        support_data = {"telegram_id": user.id, "full_name": user.first_name, "username": user.username, "message": user_msg}
         supabase.table("support_messages").insert(support_data).execute()
     except Exception as e:
-        print(f"خطأ أثناء حفظ رسالة الدعم في Supabase: {e}")
+        print(f"Error saving support: {e}")
 
-    admin_notification = (
-        f"📩 **رسالة دعم جديدة**\n\n"
-        f"👤 **المستخدِم:** {user.first_name} (@{user.username})\n"
-        f"🆔 **ID:** `{user.id}`\n\n"
-        f"💬 **الرسالة:**\n{user_msg}"
-    )
+    admin_notification = f"📩 **رسالة دعم جديدة**\n\n👤 **المستخدِم:** {user.first_name} (@{user.username})\n🆔 **ID:** `{user.id}`\n\n💬 **الرسالة:**\n{user_msg}"
     
     try:
         await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_notification, parse_mode="Markdown")
-        await update.message.reply_text("تم إرسال رسالتك إلى الدعم وتخزينها بنجاح! سنرد عليك في أقرب وقت.", reply_markup=get_main_keyboard())
+        await update.message.reply_text("تم إرسال رسالتك إلى الدعم بنجاح!", reply_markup=get_main_keyboard())
     except Exception as e:
-        await update.message.reply_text("حدث خطأ أثناء الإرسال، يرجى المحاولة لاحقاً.", reply_markup=get_main_keyboard())
+        await update.message.reply_text("حدث خطأ أثناء الإرسال.", reply_markup=get_main_keyboard())
 
     return ConversationHandler.END
 
@@ -222,7 +209,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("تم إلغاء العملية.", reply_markup=get_main_keyboard())
     return ConversationHandler.END
 
-# --- التشغيل الرئيسي ---
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -237,9 +223,7 @@ def main():
 
     support_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^💬 الدعم$"), start_support)],
-        states={
-            SUPPORT_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_support_to_admin)],
-        },
+        states={SUPPORT_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_support_to_admin)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
@@ -249,7 +233,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^📂 الأرشيف$"), open_archive))
     app.add_handler(MessageHandler(filters.Regex("^📺 قناة اليوتيوب$"), open_youtube))
 
-    print("البوت يعمل الآن مع الميزات المحدثة...")
+    print("البوت يعمل مع ميزة الكتم والإغلاق العام...")
     app.run_polling()
 
 if __name__ == "__main__":
