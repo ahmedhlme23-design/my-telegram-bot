@@ -43,7 +43,7 @@ YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UCL1nCgb41VNqe32kY0tCZ1w/
 # مراحل الحوار
 REG_NAME, REG_PHONE, SUPPORT_MSG = range(3)
 
-# دالة التحقق من حظر المستخدم من لوحة التحكم
+# دالة التحقق من حظر المستخدم
 async def is_user_blocked(user_id: int) -> bool:
     try:
         res = supabase.table("users").select("is_blocked").eq("telegram_id", user_id).execute()
@@ -53,7 +53,7 @@ async def is_user_blocked(user_id: int) -> bool:
         print(f"خطأ أثناء فحص حالة الحظر: {e}")
     return False
 
-# قائمة الأزرار الرئيسية المحدثة (إضافة زر اليوتيوب)
+# قائمة الأزرار الرئيسية
 def get_main_keyboard():
     keyboard = [
         [KeyboardButton("📝 تسجيل"), KeyboardButton("📂 الأرشيف")],
@@ -137,7 +137,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     return ConversationHandler.END
 
-# --- قسم الأرشيف (ديناميكي من Supabase) ---
+# --- قسم الأرشيف ---
 async def open_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if await is_user_blocked(user_id):
@@ -249,7 +249,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^📂 الأرشيف$"), open_archive))
     app.add_handler(MessageHandler(filters.Regex("^📺 قناة اليوتيوب$"), open_youtube))
 
-    print("البوت يعمل الآن مع إضافة زر اليوتيوب...")
+    print("البوت يعمل الآن مع الميزات المحدثة...")
     app.run_polling()
 
 if __name__ == "__main__":
