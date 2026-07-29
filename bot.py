@@ -10,18 +10,19 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     ContextTypes,
     ConversationHandler,
     filters,
 )
 
-# --- 1. سيرفر وهمي للاستضافة ---
+logging.basicConfig(level=logging.ERROR)
+
+# --- 1. سيرفر وهمي للـ Keep-Alive ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is alive and running!")
+        self.wfile.write(b"Bot is active")
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
@@ -42,11 +43,8 @@ ADMIN_CHAT_ID = 1359132699
 YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UCL1nCgb41VNqe32kY0tCZ1w/"
 
 REG_NAME, REG_PHONE, SUPPORT_MSG = range(3)
-
-# قائمة أسماء الأزرار الرسمية لمنع حفظها كنصوص شات
 SYSTEM_BUTTONS = ["📝 تسجيل", "📂 الأرشيف", "🎬 الفيديوهات الجديدة", "📺 قناة اليوتيوب", "💬 الدعم"]
 
-# --- دالة تسجيل اليوزر الآلي (محدثة لمنع خطأ NOT NULL) ---
 async def ensure_user_registered(user):
     if not user:
         return
@@ -60,7 +58,6 @@ async def ensure_user_registered(user):
     except Exception as e:
         print(f"Error registering user: {e}")
 
-# --- دالة حفظ رسالة الشات المباشر ---
 async def log_chat_message(user_id: int, text: str, sender: str = "user"):
     try:
         if text and text not in SYSTEM_BUTTONS:
@@ -72,7 +69,6 @@ async def log_chat_message(user_id: int, text: str, sender: str = "user"):
     except Exception as e:
         print(f"Error logging chat message: {e}")
 
-# --- دوال التحقق من الحظر والـ Mute ---
 async def check_user_access(user_id: int):
     try:
         global_res = supabase.table("bot_settings").select("value").eq("key", "global_mute").execute()
@@ -111,7 +107,6 @@ def get_main_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     await ensure_user_registered(user)
@@ -123,7 +118,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("أهلاً بك! اختر من القائمة أدناه:", reply_markup=get_main_keyboard())
 
-# --- قسم الفيديوهات الجديدة ---
 async def open_new_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     await ensure_user_registered(user)
@@ -134,11 +128,11 @@ async def open_new_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        res = supabase.table("new_videos").select("*").order("id", desc=True).limit(10).execute()
+        res = supabase.table("new_videos").select("*").order("id", desc=True).limit(5).execute()
         videos = res.data
 
         if not videos:
-            await update.message.reply_text("لا توجد فيديوهات جديدة مضافة حالياً.")
+            await update.message.reply_text("لا توجد فيديوهات جديدة مضافة حالياً.", reply_markup=get_main_keyboard())
             return
 
         await update.message.reply_text("🎬 **قائمة الفيديوهات الجديدة:**")
@@ -152,19 +146,21 @@ async def open_new_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup(keyboard)
             caption_text = f"📌 **{title}**"
 
+            sent = False
             if thumb and (thumb.startswith("http://") or thumb.startswith("https://")):
                 try:
                     await update.message.reply_photo(photo=thumb, caption=caption_text, parse_mode="Markdown", reply_markup=reply_markup)
+                    sent = True
                 except Exception:
-                    await update.message.reply_text(caption_text, parse_mode="Markdown", reply_markup=reply_markup)
-            else:
+                    sent = False
+
+            if not sent:
                 await update.message.reply_text(caption_text, parse_mode="Markdown", reply_markup=reply_markup)
 
     except Exception as e:
         print(f"Error fetching videos: {e}")
-        await update.message.reply_text("حدث خطأ أثناء جلب الفيديوهات.")
+        await update.message.reply_text("حدث خطأ أثناء جلب الفيديوهات.", reply_markup=get_main_keyboard())
 
-# --- قسم الأرشيف ---
 async def open_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     await ensure_user_registered(user)
@@ -178,15 +174,14 @@ async def open_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         res = supabase.table("archive_files").select("*").order("id", desc=True).execute()
         files = res.data
         if not files:
-            await update.message.reply_text("لا توجد ملفات في الأرشيف حالياً.")
+            await update.message.reply_text("لا توجد ملفات في الأرشيف حالياً.", reply_markup=get_main_keyboard())
             return
 
         keyboard = [[InlineKeyboardButton(f"📄 {f['title']}", url=f['file_url'])] for f in files]
         await update.message.reply_text("اختر الملف الذي تريد تحميله من الأرشيف:", reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
-        await update.message.reply_text("حدث خطأ أثناء جلب الملفات.")
+        await update.message.reply_text("حدث خطأ أثناء جلب الملفات.", reply_markup=get_main_keyboard())
 
-# --- قسم قناة اليوتيوب ---
 async def open_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     await ensure_user_registered(user)
@@ -199,7 +194,6 @@ async def open_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("🔗 زيارة قناة اليوتيوب", url=YOUTUBE_CHANNEL_URL)]]
     await update.message.reply_text("اضغط على الزر أدناه للانتقال للقناة:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# --- قسم التسجيل ---
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     await ensure_user_registered(user)
@@ -265,7 +259,6 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     return ConversationHandler.END
 
-# --- قسم الدعم ---
 async def start_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     await ensure_user_registered(user)
@@ -308,7 +301,6 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
 
     return ConversationHandler.END
 
-# استقبال أية رسالة نصية عادية وتسجيلها للشات المباشر
 async def handle_direct_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.text:
         user = update.message.from_user
@@ -357,8 +349,8 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_direct_chat_message))
 
-    print("البوت يعمل بشكل ممتاز ومستقر...")
-    app.run_polling()
+    print("البوت يعمل واستجابة الأزرار فورية دون حاجة للتحديث...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
