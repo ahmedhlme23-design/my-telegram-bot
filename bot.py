@@ -46,7 +46,7 @@ REG_NAME, REG_PHONE, SUPPORT_MSG = range(3)
 # قائمة أسماء الأزرار الرسمية لمنع حفظها كنصوص شات
 SYSTEM_BUTTONS = ["📝 تسجيل", "📂 الأرشيف", "🎬 الفيديوهات الجديدة", "📺 قناة اليوتيوب", "💬 الدعم"]
 
-# --- دالة تسجيل اليوزر الآلي ---
+# --- دالة تسجيل اليوزر الآلي (محدثة لمنع خطأ NOT NULL) ---
 async def ensure_user_registered(user):
     if not user:
         return
@@ -308,7 +308,7 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
 
     return ConversationHandler.END
 
-# 🔴 استقبال أية رسالة نصية عادية وتسجيلها للشات المباشر دون إرسال "تم استلام رسالتك"
+# استقبال أية رسالة نصية عادية وتسجيلها للشات المباشر
 async def handle_direct_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.text:
         user = update.message.from_user
@@ -324,7 +324,6 @@ async def handle_direct_chat_message(update: Update, context: ContextTypes.DEFAU
             await update.message.reply_text(reason, reply_markup=get_main_keyboard())
             return
 
-        # تسجيل النص مباشرة للوحة التحكم بدون الرد برسالة آليّة
         await log_chat_message(user.id, text, "user")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -358,7 +357,7 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_direct_chat_message))
 
-    print("البوت يعمل بوضع الشات المباشر الصامت الصادر والوارد...")
+    print("البوت يعمل بشكل ممتاز ومستقر...")
     app.run_polling()
 
 if __name__ == "__main__":
