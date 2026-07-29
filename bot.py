@@ -38,6 +38,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # --- 3. إعدادات البوت ---
 BOT_TOKEN = "8943376248:AAHAdToTCLQAc-3uj9MQ7oAbhTwO5q-rHjs"  # ضع توكن البوت الخاص بك من BotFather
 ADMIN_CHAT_ID = 1359132699          # ضع الـ ID الخاص بك هنا لرسائل الدعم
+YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UCL1nCgb41VNqe32kY0tCZ1w/"
 
 # مراحل الحوار
 REG_NAME, REG_PHONE, SUPPORT_MSG = range(3)
@@ -52,11 +53,11 @@ async def is_user_blocked(user_id: int) -> bool:
         print(f"خطأ أثناء فحص حالة الحظر: {e}")
     return False
 
-# قائمة الأزرار الرئيسية
+# قائمة الأزرار الرئيسية المحدثة (إضافة زر اليوتيوب)
 def get_main_keyboard():
     keyboard = [
         [KeyboardButton("📝 تسجيل"), KeyboardButton("📂 الأرشيف")],
-        [KeyboardButton("💬 الدعم")]
+        [KeyboardButton("📺 قناة اليوتيوب"), KeyboardButton("💬 الدعم")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -85,7 +86,6 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name_input = update.message.text.strip()
     
-    # التحقق من أن الاسم لا يحتوي على أرقام فقط وأن به أحرف
     if name_input.isdigit() or not re.search(r'[\w\u0600-\u06FF]', name_input):
         await update.message.reply_text("❌ عذراً، يجب أن يتكون الاسم من أحرف وليس أرقام فقط. أعد إدخال اسمك الصحيح:")
         return REG_NAME
@@ -108,17 +108,14 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone = update.message.contact.phone_number
     else:
         raw_phone = update.message.text.strip()
-        # تنظيف النص من علامات الشارطة والمجموعات الشائعة
         cleaned_phone = raw_phone.replace("+", "").replace(" ", "").replace("-", "")
         
-        # التأكد من بقاء أرقام فقط
         if not cleaned_phone.isdigit():
             await update.message.reply_text("❌ عذراً، يجب أن يحتوي رقم الهاتف على أرقام فقط! أعد إدخال رقم هاتفك:")
             return REG_PHONE
         
         phone = raw_phone
 
-    # حفظ البيانات في Supabase (جدول users)
     try:
         data = {
             "telegram_id": user_id,
@@ -148,7 +145,6 @@ async def open_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # جلب قائمة الملفات المرفوعة عبر لوحة التحكم بالموقع
         res = supabase.table("archive_files").select("*").order("id", desc=True).execute()
         files = res.data
 
@@ -166,6 +162,22 @@ async def open_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"خطأ أثناء جلب الأرشيف: {e}")
         await update.message.reply_text("حدث خطأ أثناء جلب الملفات من الأرشيف.")
 
+# --- قسم قناة اليوتيوب ---
+async def open_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if await is_user_blocked(user_id):
+        await update.message.reply_text("❌ عذراً، تم حظرك من استخدام البوت.")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("🔗 زيارة قناة اليوتيوب", url=YOUTUBE_CHANNEL_URL)]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "اضغط على الزر أدناه للانتقال لمشاهدة القناة على يوتيوب:",
+        reply_markup=reply_markup
+    )
+
 # --- قسم الدعم ---
 async def start_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -180,7 +192,6 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
     user = update.message.from_user
     user_msg = update.message.text
 
-    # 1. حفظ رسالة الدعم في Supabase لتظهر في لوحة التحكم والموقع
     try:
         support_data = {
             "telegram_id": user.id,
@@ -192,7 +203,6 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         print(f"خطأ أثناء حفظ رسالة الدعم في Supabase: {e}")
 
-    # 2. إرسال إشعار للأدمن في تيليجرام
     admin_notification = (
         f"📩 **رسالة دعم جديدة**\n\n"
         f"👤 **المستخدِم:** {user.first_name} (@{user.username})\n"
@@ -237,8 +247,9 @@ def main():
     app.add_handler(reg_handler)
     app.add_handler(support_handler)
     app.add_handler(MessageHandler(filters.Regex("^📂 الأرشيف$"), open_archive))
+    app.add_handler(MessageHandler(filters.Regex("^📺 قناة اليوتيوب$"), open_youtube))
 
-    print("البوت يعمل الآن مع التكامل الكامل للوحة التحكم وبنك البيانات...")
+    print("البوت يعمل الآن مع إضافة زر اليوتيوب...")
     app.run_polling()
 
 if __name__ == "__main__":
