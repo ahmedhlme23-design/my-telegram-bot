@@ -45,8 +45,6 @@ REG_NAME, REG_PHONE, SUPPORT_MSG = range(3)
 
 # --- دوال التحقق من الحظر والـ Mute ---
 async def check_user_access(user_id: int):
-    """ترجع (يمكنه_الاستخدام, سبب_المنع)"""
-    # 1. فحص الإغلاق العام للجميع (Global Mute)
     try:
         global_res = supabase.table("bot_settings").select("value").eq("key", "global_mute").execute()
         if global_res.data and global_res.data[0].get("value") == True:
@@ -54,17 +52,13 @@ async def check_user_access(user_id: int):
     except Exception as e:
         print(f"Error checking global mute: {e}")
 
-    # 2. فحص الحظر والكتم للمستخدم
     try:
         user_res = supabase.table("users").select("is_blocked, muted_until").eq("telegram_id", user_id).execute()
         if user_res.data:
             user_data = user_res.data[0]
-            
-            # حظر نهائي
             if user_data.get("is_blocked"):
                 return False, "❌ عذراً، تم حظرك من استخدام هذا البوت."
 
-            # كتم مؤقت
             muted_until_str = user_data.get("muted_until")
             if muted_until_str:
                 muted_until = datetime.fromisoformat(muted_until_str.replace("Z", "+00:00"))
@@ -80,11 +74,12 @@ async def check_user_access(user_id: int):
 
     return True, ""
 
-# قائمة الأزرار الرئيسية
+# قائمة الأزرار الرئيسية (إضافة زر الفيديوهات الجديدة)
 def get_main_keyboard():
     keyboard = [
         [KeyboardButton("📝 تسجيل"), KeyboardButton("📂 الأرشيف")],
-        [KeyboardButton("📺 قناة اليوتيوب"), KeyboardButton("💬 الدعم")]
+        [KeyboardButton("🎬 الفيديوهات الجديدة"), KeyboardButton("📺 قناة اليوتيوب")],
+        [KeyboardButton("💬 الدعم")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -97,6 +92,48 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text("أهلاً بك! اختر من القائمة أدناه:", reply_markup=get_main_keyboard())
+
+# --- قسم الفيديوهات الجديدة ---
+async def open_new_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    can_access, reason = await check_user_access(user_id)
+    if not can_access:
+        await update.message.reply_text(reason)
+        return
+
+    try:
+        res = supabase.table("new_videos").select("*").order("id", desc=True).limit(10).execute()
+        videos = res.data
+
+        if not videos:
+            await update.message.reply_text("لا توجد فيديوهات جديدة مضافة حالياً.")
+            return
+
+        await update.message.reply_text("🎬 **قائمة الفيديوهات الجديدة:**")
+
+        for vid in videos:
+            title = vid.get("title", "فيديو جديد")
+            url = vid.get("video_url", "#")
+            thumb = vid.get("thumbnail_url")
+
+            keyboard = [[InlineKeyboardButton("▶️ مشاهدة الفيديو الآن", url=url)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            caption_text = f"📌 **{title}**"
+
+            # إذا كانت هناك صورة مصغرة يرسلها كـ Photo مع الكابشن والزر
+            if thumb and (thumb.startswith("http://") or thumb.startswith("https://")):
+                try:
+                    await update.message.reply_photo(photo=thumb, caption=caption_text, parse_mode="Markdown", reply_markup=reply_markup)
+                except Exception:
+                    # في حال كان رابط الصورة غير مباشر أو فيه خطأ يكتفي بالرسالة النصية
+                    await update.message.reply_text(caption_text, parse_mode="Markdown", reply_markup=reply_markup)
+            else:
+                await update.message.reply_text(caption_text, parse_mode="Markdown", reply_markup=reply_markup)
+
+    except Exception as e:
+        print(f"Error fetching videos: {e}")
+        await update.message.reply_text("حدث خطأ أثناء جلب الفيديوهات.")
 
 # --- قسم التسجيل ---
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -197,8 +234,6 @@ async def start_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    
-    # 🔴 فحص الكتم والحظر فور استلام نص الرسالة قبل حفظها أو إرسالها للأدمن
     can_access, reason = await check_user_access(user.id)
     if not can_access:
         await update.message.reply_text(reason, reply_markup=get_main_keyboard())
@@ -249,8 +284,9 @@ def main():
     app.add_handler(support_handler)
     app.add_handler(MessageHandler(filters.Regex("^📂 الأرشيف$"), open_archive))
     app.add_handler(MessageHandler(filters.Regex("^📺 قناة اليوتيوب$"), open_youtube))
+    app.add_handler(MessageHandler(filters.Regex("^🎬 الفيديوهات الجديدة$"), open_new_videos))
 
-    print("البوت يعمل مع التعديل الدقيق لفحص الكتم...")
+    print("البوت يعمل بنجاح...")
     app.run_polling()
 
 if __name__ == "__main__":
