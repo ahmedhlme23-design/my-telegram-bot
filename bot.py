@@ -11,6 +11,7 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     ConversationHandler,
     filters,
@@ -43,10 +44,10 @@ BOT_TOKEN = "8943376248:AAHAdToTCLQAc-3uj9MQ7oAbhTwO5q-rHjs"
 ADMIN_CHAT_ID = 1359132699
 YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UCL1nCgb41VNqe32kY0tCZ1w/"
 
-REG_NAME, REG_PHONE, SUPPORT_MSG = range(3)
+REG_NAME, REG_PHONE, SUPPORT_MSG, SUPPORT_REPLY_MSG = range(4)
 SYSTEM_BUTTONS = ["📝 تسجيل", "📂 الأرشيف", "🎬 الفيديوهات الجديدة", "📺 قناة اليوتيوب", "💬 الدعم"]
 
-# --- دوال الاستعلام اللاتزامنية غير المعطلة (Async Supabase Calls) ---
+# --- دوال Supabase اللاتزامنية السريعة ---
 async def ensure_user_registered(user):
     if not user:
         return
@@ -187,7 +188,7 @@ async def open_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text("حدث خطأ أثناء جلب الملفات.", reply_markup=get_main_keyboard())
 
-# --- قسم قناة اليوتيوب (استجابة فورية بدون أي تأخير) ---
+# --- قسم قناة اليوتيوب ---
 async def open_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     asyncio.create_task(ensure_user_registered(user))
@@ -294,7 +295,7 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         support_data = {"telegram_id": user.id, "full_name": user.first_name, "username": user.username, "message": user_msg}
-        await asyncio.to_thread(lambda: supabase.table("support_messages").insert(support_data).execute())
+        res = await asyncio.to_thread(lambda: supabase.table("support_messages").insert(support_data).execute())
     except Exception as e:
         print(f"Error saving support: {e}")
 
@@ -306,6 +307,46 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("تم إرسال رسالتك إلى الدعم بنجاح!", reply_markup=get_main_keyboard())
     except Exception as e:
         await update.message.reply_text("حدث خطأ أثناء الإرسال.", reply_markup=get_main_keyboard())
+
+    return ConversationHandler.END
+
+# --- الرد على تذكرة دعم محددة عند ضغط المستخدم زر الإجابة ---
+async def handle_reply_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    ticket_id = query.data.replace("reply_ticket_", "")
+    context.user_data['active_ticket_id'] = ticket_id
+
+    await query.message.reply_text("✏️ **من فضلك اكتب ردك الجديد على هذه الرسالة:**")
+    return SUPPORT_REPLY_MSG
+
+async def process_user_ticket_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    text = update.message.text.strip()
+    ticket_id = context.user_data.get('active_ticket_id')
+
+    if text in SYSTEM_BUTTONS:
+        await update.message.reply_text("تم إلغاء الإضافة.", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
+    if ticket_id:
+        try:
+            # جلب التذكرة الحالية وتحديث الردود
+            res = await asyncio.to_thread(lambda: supabase.table("support_messages").select("replies").eq("id", ticket_id).single().execute())
+            existing_replies = res.data.get("replies") or []
+            existing_replies.append({"sender": "user", "text": text, "time": datetime.now().strftime("%Y-%m-%d %H:%M")})
+
+            await asyncio.to_thread(lambda: supabase.table("support_messages").update({
+                "replies": existing_replies,
+                "is_replied": False
+            }).eq("id", ticket_id).execute())
+
+            asyncio.create_task(log_chat_message(user.id, text, "user"))
+            await update.message.reply_text("✅ تم إدراج ردك داخل نفس التذكرة وتوصيله للإدارة بنجاح!", reply_markup=get_main_keyboard())
+        except Exception as e:
+            print(f"Error appending user reply: {e}")
+            await update.message.reply_text("حدث خطأ أثناء حفظ الرد.", reply_markup=get_main_keyboard())
 
     return ConversationHandler.END
 
@@ -331,7 +372,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 def main():
-    # تفعيل المعالجة المتوازية للتحديثات لمنع التأخير والطوابير
     app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
 
     reg_handler = ConversationHandler(
@@ -344,8 +384,14 @@ def main():
     )
 
     support_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^💬 الدعم$"), start_support)],
-        states={SUPPORT_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_support_to_admin)]},
+        entry_points=[
+            MessageHandler(filters.Regex("^💬 الدعم$"), start_support),
+            CallbackQueryHandler(handle_reply_button_click, pattern="^reply_ticket_")
+        ],
+        states={
+            SUPPORT_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_support_to_admin)],
+            SUPPORT_REPLY_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_user_ticket_reply)],
+        },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
@@ -358,7 +404,7 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_direct_chat_message))
 
-    print("البوت يعمل بالسرعة الفائقة والمعالجة اللحظية بدون تأخير الخطوة الواحدة...")
+    print("البوت يعمل بنظام التذاكر وسلسلة الردود المنسقة...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
