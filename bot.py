@@ -16,7 +16,7 @@ from telegram.ext import (
     filters,
 )
 
-# --- 1. سيرفر وهمي للاستضافة ---
+# --- 1. سيرفر وهمي للاستضافة 24/7 ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -45,7 +45,10 @@ REG_NAME, REG_PHONE, SUPPORT_MSG = range(3)
 
 # --- دالة تسجيل حساب تلقائي وحفظ الرسائل لحظياً ---
 async def auto_register_and_log(user, message_text: str, sender: str = "user"):
+    if not user:
+        return
     try:
+        # 1. حفظ أو تحديث بيانت المستخدم تلقائياً
         user_data = {
             "telegram_id": user.id,
             "full_name": user.first_name or "مستخدم",
@@ -53,6 +56,7 @@ async def auto_register_and_log(user, message_text: str, sender: str = "user"):
         }
         supabase.table("users").upsert(user_data, on_conflict="telegram_id").execute()
 
+        # 2. تسجيل نص الرسالة في قاعدة البيانات
         if message_text:
             msg_data = {
                 "telegram_id": user.id,
@@ -61,7 +65,7 @@ async def auto_register_and_log(user, message_text: str, sender: str = "user"):
             }
             supabase.table("chat_messages").insert(msg_data).execute()
     except Exception as e:
-        print(f"Error auto-registering or logging: {e}")
+        print(f"Error in auto_register_and_log: {e}")
 
 # --- دوال التحقق من الحظر والـ Mute ---
 async def check_user_access(user_id: int):
@@ -291,14 +295,22 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
 
     return ConversationHandler.END
 
-# 🔴 دالة التقاط أي رسالة عامة من المستخدم وتسجيلها فوراً للوحة التحكم
-async def handle_any_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# 🔴 معالج لالتقاط أية رسالة عادية خارج الأوامر والأزرار
+async def handle_general_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.text:
         user = update.message.from_user
-        msg_text = update.message.text
-        # استثناء الأزرار الرئيسية من الالتقاط المزدوج
-        if msg_text not in ["📝 تسجيل", "📂 الأرشيف", "🎬 الفيديوهات الجديدة", "📺 قناة اليوتيوب", "💬 الدعم"]:
-            await auto_register_and_log(user, msg_text, "user")
+        text = update.message.text
+        
+        # تسجيل المستخدم المباشر ونص الرسالة فوراً
+        await auto_register_and_log(user, text, "user")
+
+        can_access, reason = await check_user_access(user.id)
+        if not can_access:
+            await update.message.reply_text(reason, reply_markup=get_main_keyboard())
+            return
+
+        # رد تلقائي إذا كانت كلمة عادية غير معروفة
+        await update.message.reply_text("وصلت رسالتك! يرجى إرسال الرسالة من خلال قسم 💬 الدعم ليتم إرسالها للإدارة مباشرة، أو اختر خياراً من القائمة:", reply_markup=get_main_keyboard())
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("تم إلغاء العملية.", reply_markup=get_main_keyboard())
@@ -329,10 +341,10 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^📺 قناة اليوتيوب$"), open_youtube))
     app.add_handler(MessageHandler(filters.Regex("^🎬 الفيديوهات الجديدة$"), open_new_videos))
 
-    # التقاط أي رسالة نصية أخرى من اليوزر فوراً
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_any_user_message))
+    # التقاط أي نص عام آخر من أي يوزر وتسجيله
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_general_message))
 
-    print("البوت يعمل بوضع التحديثات اللحظية...")
+    print("البوت يعمل مع التعديل النهائي لاستقبال وتسجيل بيانات كافة المستخدمين...")
     app.run_polling()
 
 if __name__ == "__main__":
