@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from supabase import create_client, Client
@@ -14,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-# --- 1. سيرفر وهمي لإبقاء الخطة المجانية على Render شغالة ---
+# --- 1. سيرفر وهمي لإبقاء الخدمة تعمل على الاستضافات السحابية ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -22,12 +23,10 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is alive and running!")
 
 def run_dummy_server():
-    # Render يمرر المنفذ عبر متغير البيئة PORT تلقائياً
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# تشغيل السيرفر الوهمي في ثريد (Thread) منفصل في الخلفية
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
 # --- 2. إعدادات Supabase ---
@@ -60,18 +59,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- قسم التسجيل ---
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("من فضلك أدخل اسمك الكامل:")
+    await update.message.reply_text("من فضلك أدخل اسمك الكامل (أحرف فقط):")
     return REG_NAME
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['name'] = update.message.text
+    name_input = update.message.text.strip()
+    
+    # التحقق أن الاسم لا يحتوي على أرقام فقط وأن فيه أحرف
+    # نتحقق من وجود أحرف ولا يتكون بالكامل من أرقام أو رموز
+    if name_input.isdigit() or not re.search(r'[\w\u0600-\u06FF]', name_input):
+        await update.message.reply_text("❌ عذراً، يجب أن يتكون الاسم من أحرف فقط وليس أرقام. يرجى إعادة إدخال اسمك الصحيح:")
+        return REG_NAME
+
+    context.user_data['name'] = name_input
     
     phone_button = ReplyKeyboardMarkup(
         [[KeyboardButton("📱 إرسال رقم الهاتف", request_contact=True)]],
         resize_keyboard=True,
         one_time_keyboard=True
     )
-    await update.message.reply_text("شكراً! الآن أرسل رقم هاتفك بالنقر على الزر أدناه أو اكتبه بنفسك:", reply_markup=phone_button)
+    await update.message.reply_text("شكراً! الآن أرسل رقم هاتفك بالنقر على الزر أدناه أو اكتبه كأرقام فقط:", reply_markup=phone_button)
     return REG_PHONE
 
 async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -81,9 +88,18 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.contact:
         phone = update.message.contact.phone_number
     else:
-        phone = update.message.text
+        raw_phone = update.message.text.strip()
+        # إزالة العلامات المسموح بها كعلامة + أو المسافات للتحقق من الأرقام فقط
+        cleaned_phone = raw_phone.replace("+", "").replace(" ", "").replace("-", "")
+        
+        # التحقق من أن ما تبقى هو أرقام فقط
+        if not cleaned_phone.isdigit():
+            await update.message.reply_text("❌ عذراً، يجب أن يحتوي رقم الهاتف على أرقام فقط بدون أحرف! يرجى إدخال رقم الهاتف بشكل صحيح:")
+            return REG_PHONE
+        
+        phone = raw_phone
 
-    # حفظ البيانات في Supabase
+    # حفظ البيانات في Supabase (جدول users)
     try:
         data = {
             "telegram_id": user_id,
@@ -132,6 +148,19 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
     user = update.message.from_user
     user_msg = update.message.text
 
+    # 1. حفظ رسالة الدعم في Supabase
+    try:
+        support_data = {
+            "telegram_id": user.id,
+            "full_name": user.first_name,
+            "username": user.username,
+            "message": user_msg
+        }
+        supabase.table("support_messages").insert(support_data).execute()
+    except Exception as e:
+        print(f"خطأ أثناء حفظ رسالة الدعم في Supabase: {e}")
+
+    # 2. إرسال الرسالة إلى الأدمن في تيليجرام
     admin_notification = (
         f"📩 **رسالة دعم جديدة**\n\n"
         f"👤 **المستخدِم:** {user.first_name} (@{user.username})\n"
@@ -141,7 +170,7 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
     
     try:
         await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_notification, parse_mode="Markdown")
-        await update.message.reply_text("تم إرسال رسالتك إلى الدعم بنجاح! سنرد عليك في أقرب وقت.", reply_markup=get_main_keyboard())
+        await update.message.reply_text("تم إرسال رسالتك إلى الدعم وتخزينها بنجاح! سنرد عليك في أقرب وقت.", reply_markup=get_main_keyboard())
     except Exception as e:
         await update.message.reply_text("حدث خطأ أثناء الإرسال، يرجى المحاولة لاحقاً.", reply_markup=get_main_keyboard())
 
@@ -178,7 +207,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^📂 الأرشيف$"), open_archive))
     app.add_handler(CallbackQueryHandler(handle_archive_download))
 
-    print("البوت يعمل الآن ومستعد للاستضافة على Render...")
+    print("البوت يعمل الآن بالمميزات المحدثة...")
     app.run_polling()
 
 if __name__ == "__main__":
