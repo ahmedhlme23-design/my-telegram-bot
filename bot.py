@@ -36,17 +36,16 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- 3. إعدادات البوت والـ ID الخاصين بك ---
+# --- 3. إعدادات البوت والـ ID ---
 BOT_TOKEN = "8943376248:AAHAdToTCLQAc-3uj9MQ7oAbhTwO5q-rHjs"
 ADMIN_CHAT_ID = 1359132699
 YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UCL1nCgb41VNqe32kY0tCZ1w/"
 
 REG_NAME, REG_PHONE, SUPPORT_MSG = range(3)
 
-# --- دالة تسجيل حساب تلقائي وحفظ الرسائل ---
+# --- دالة تسجيل حساب تلقائي وحفظ الرسائل لحظياً ---
 async def auto_register_and_log(user, message_text: str, sender: str = "user"):
     try:
-        # 1. إنشاء/تحديث حساب اليوزر تلقائياً
         user_data = {
             "telegram_id": user.id,
             "full_name": user.first_name or "مستخدم",
@@ -54,7 +53,6 @@ async def auto_register_and_log(user, message_text: str, sender: str = "user"):
         }
         supabase.table("users").upsert(user_data, on_conflict="telegram_id").execute()
 
-        # 2. تسجل النص في محادثات المستخدم
         if message_text:
             msg_data = {
                 "telegram_id": user.id,
@@ -144,7 +142,6 @@ async def open_new_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             keyboard = [[InlineKeyboardButton("▶️ مشاهدة الفيديو الآن", url=url)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-
             caption_text = f"📌 **{title}**"
 
             if thumb and (thumb.startswith("http://") or thumb.startswith("https://")):
@@ -294,6 +291,15 @@ async def send_support_to_admin(update: Update, context: ContextTypes.DEFAULT_TY
 
     return ConversationHandler.END
 
+# 🔴 دالة التقاط أي رسالة عامة من المستخدم وتسجيلها فوراً للوحة التحكم
+async def handle_any_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message and update.message.text:
+        user = update.message.from_user
+        msg_text = update.message.text
+        # استثناء الأزرار الرئيسية من الالتقاط المزدوج
+        if msg_text not in ["📝 تسجيل", "📂 الأرشيف", "🎬 الفيديوهات الجديدة", "📺 قناة اليوتيوب", "💬 الدعم"]:
+            await auto_register_and_log(user, msg_text, "user")
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("تم إلغاء العملية.", reply_markup=get_main_keyboard())
     return ConversationHandler.END
@@ -323,7 +329,10 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^📺 قناة اليوتيوب$"), open_youtube))
     app.add_handler(MessageHandler(filters.Regex("^🎬 الفيديوهات الجديدة$"), open_new_videos))
 
-    print("البوت يعمل مع ميزة التسجيل التلقائي وسجل الرسائل...")
+    # التقاط أي رسالة نصية أخرى من اليوزر فوراً
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_any_user_message))
+
+    print("البوت يعمل بوضع التحديثات اللحظية...")
     app.run_polling()
 
 if __name__ == "__main__":
